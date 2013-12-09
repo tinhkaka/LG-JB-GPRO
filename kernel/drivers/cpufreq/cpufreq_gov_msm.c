@@ -1,4 +1,4 @@
-/* Copyright (c) 2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2012, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -66,13 +66,17 @@ static int msm_dcvs_freq_set(struct msm_dcvs_freq *self,
 	if (freq > gov->max_freq)
 		freq = gov->max_freq;
 
-	ret = __cpufreq_driver_target(gov->policy, freq, CPUFREQ_RELATION_L);
-	gov->cur_freq = gov->policy->cur;
-
 	mutex_unlock(&per_cpu(gov_mutex, gov->cpu));
 
-	if (!ret)
-		return gov->cur_freq;
+	ret = cpufreq_driver_target(gov->policy, freq, CPUFREQ_RELATION_L);
+
+	if (!ret) {
+		gov->cur_freq = cpufreq_quick_get(gov->cpu);
+		if (freq != gov->cur_freq)
+			pr_err("cpu %d freq %u gov->cur_freq %u didn't match",
+						gov->cpu, freq, gov->cur_freq);
+	}
+	ret = gov->cur_freq;
 
 	return ret;
 }
@@ -82,6 +86,11 @@ static unsigned int msm_dcvs_freq_get(struct msm_dcvs_freq *self)
 	struct msm_gov *gov =
 		container_of(self, struct msm_gov, gov_notifier);
 
+	/*
+	 * the rw_sem in cpufreq is always held when this is called.
+	 * The policy->cur won't be updated in this case - so it is safe to
+	 * access policy->cur
+	 */
 	return gov->cur_freq;
 }
 
@@ -113,9 +122,7 @@ static int cpufreq_governor_msm(struct cpufreq_policy *policy,
 		break;
 
 	case CPUFREQ_GOV_STOP:
-		mutex_lock(&per_cpu(gov_mutex, cpu));
 		msm_dcvs_freq_sink_unregister(dcvs_notifier);
-		mutex_unlock(&per_cpu(gov_mutex, cpu));
 		break;
 
 	case CPUFREQ_GOV_LIMITS:
@@ -138,15 +145,17 @@ static int __devinit msm_gov_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	int cpu;
-	uint32_t group_id = 0x43505530; /* CPU0 */
 	struct msm_dcvs_core_info *core = NULL;
+	int sensor = 0;
 
 	core = pdev->dev.platform_data;
 
 	for_each_possible_cpu(cpu) {
 		mutex_init(&per_cpu(gov_mutex, cpu));
 		snprintf(core_name[cpu], 10, "cpu%d", cpu);
-		ret = msm_dcvs_register_core(core_name[cpu], group_id, core);
+		if (cpu < core->num_cores)
+			sensor = core->sensors[cpu];
+		ret = msm_dcvs_register_core(core_name[cpu], core, sensor);
 		if (ret)
 			pr_err("Unable to register core for %d\n", cpu);
 	}
