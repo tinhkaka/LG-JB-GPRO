@@ -32,6 +32,10 @@
 
 #include <trace/events/power.h>
 
+#ifdef CONFIG_LGE_PM_LOW_BATT_CHG
+#include <mach/board_lge.h>
+#endif
+
 /**
  * The "cpufreq driver" - the arch- or hardware-dependent low
  * level driver of CPUFreq support, and its spinlock. This lock
@@ -435,12 +439,8 @@ static ssize_t store_##file_name					\
 	if (ret != 1)							\
 		return -EINVAL;						\
 									\
-	ret = cpufreq_driver->verify(&new_policy);			\
-	if (ret)							\
-		pr_err("cpufreq: Frequency verification failed\n");	\
-									\
-	policy->user_policy.object = new_policy.object;			\
 	ret = __cpufreq_set_policy(policy, &new_policy);		\
+	policy->user_policy.object = policy->object;			\
 									\
 	return ret ? ret : count;					\
 }
@@ -608,31 +608,6 @@ static ssize_t show_scaling_setspeed(struct cpufreq_policy *policy, char *buf)
 	return policy->governor->show_setspeed(policy, buf);
 }
 
-static ssize_t store_dvfs_test(struct cpufreq_policy *policy,
-					const char *buf, size_t count)
-{
-	unsigned int enable= 0;
-	unsigned int ret;
-
-	if (!policy->governor || !policy->governor->start_dvfs_test)
-		return -EINVAL;
-
-	ret = sscanf(buf, "%u", &enable);
-	if (ret != 1)
-		return -EINVAL;
-
-	policy->governor->start_dvfs_test(policy, enable);
-
-	return count;
-}
-
-static ssize_t show_dvfs_test(struct cpufreq_policy *policy, char *buf)
-{
-	if (!policy->governor || !policy->governor->show_dvfs_test)
-		return sprintf(buf, "<unsupported>\n");
-
-	return policy->governor->show_dvfs_test(policy, buf);
-}
 /**
  * show_scaling_driver - show the current cpufreq HW/BIOS limitation
  */
@@ -663,7 +638,6 @@ cpufreq_freq_attr_rw(scaling_min_freq);
 cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
-cpufreq_freq_attr_rw(dvfs_test);
 
 static struct attribute *default_attrs[] = {
 	&cpuinfo_min_freq.attr,
@@ -678,7 +652,6 @@ static struct attribute *default_attrs[] = {
 	&scaling_driver.attr,
 	&scaling_available_governors.attr,
 	&scaling_setspeed.attr,
-        &dvfs_test.attr,
 	NULL
 };
 
@@ -818,8 +791,6 @@ static int cpufreq_add_dev_policy(unsigned int cpu,
 
 			spin_lock_irqsave(&cpufreq_driver_lock, flags);
 			cpumask_copy(managed_policy->cpus, policy->cpus);
-			cpumask_and(managed_policy->cpus,
-					managed_policy->cpus, cpu_online_mask);
 			per_cpu(cpufreq_cpu_data, cpu) = managed_policy;
 			spin_unlock_irqrestore(&cpufreq_driver_lock, flags);
 
@@ -962,6 +933,9 @@ err_out_kobj_put:
  * with with cpu hotplugging and all hell will break loose. Tried to clean this
  * mess up, but more thorough testing is needed. - Mathieu
  */
+#ifdef CONFIG_LGE_PM_LOW_BATT_CHG
+extern struct cpufreq_governor cpufreq_gov_powersave;
+#endif
 static int cpufreq_add_dev(struct device *dev, struct subsys_interface *sif)
 {
 	unsigned int cpu = dev->id;
@@ -1029,6 +1003,14 @@ static int cpufreq_add_dev(struct device *dev, struct subsys_interface *sif)
 #endif
 	if (!found)
 		policy->governor = CPUFREQ_DEFAULT_GOVERNOR;
+
+#ifdef CONFIG_LGE_PM_LOW_BATT_CHG
+	if (!found && lge_get_charger_logo_state()) {
+		policy->governor = &cpufreq_gov_powersave;
+		pr_info("During chargerlogo, cpu %d governor=gov_powersave\n", cpu);
+	}
+#endif
+
 	/* call driver. From then on the cpufreq must be able
 	 * to accept all calls to ->verify and ->setpolicy for this CPU
 	 */
